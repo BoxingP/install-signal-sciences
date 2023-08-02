@@ -1,28 +1,41 @@
-function Get-SigSciAgentVersion
+function Test-IsAdministrator
 {
-    param ([string]$AgentPath = "C:\Program Files\Signal Sciences\Agent\sigsci-agent.exe")
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    return $isAdmin
+}
+
+function Get-Version
+{
+    param ([string]$FilePath, [string]$VersionFlag)
     try
     {
-        $output = & $AgentPath --version 2>&1
-        return $output
+        $output = & $FilePath $VersionFlag 2>&1
+        $versionPattern = '\d+(\.\d+){0,2}(?:\.\d+)?'
+        $version = $output | Select-String -Pattern $versionPattern | ForEach-Object { $_.Matches.Value }
+        return $version
     }
     catch
     {
-        Write-Host "Error occurred while getting the agent version."
+        Write-Host "Error occurred while getting the version from $FilePath :"
+        Write-Host $_.Exception.Message
         return $null
     }
 }
 
-function Get-SigSciAgentLatestVersion
+function Get-LatestVersion
 {
-    param ([string]$Url = "https://dl.signalsciences.net/sigsci-agent/VERSION")
+    param ([string]$Url)
     try
     {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $response = Invoke-WebRequest -Uri $Url
         if ($response.StatusCode -eq 200)
         {
-            $versionString = [System.Text.Encoding]::ASCII.GetString($response.Content)
+            $versionString = $response.Content
+            if ($versionString -is [byte[]])
+            {
+                $versionString = [System.Text.Encoding]::ASCII.GetString($versionString)
+            }
             return $versionString.Trim()
         }
         else
@@ -33,7 +46,7 @@ function Get-SigSciAgentLatestVersion
     }
     catch
     {
-        Write-Host "Error occurred while retrieving the agent latest version:"
+        Write-Host "Error occurred while retrieving the latest version from $Url :"
         Write-Host $_.Exception.Message
         return $null
     }
@@ -42,7 +55,7 @@ function Get-SigSciAgentLatestVersion
 function New-DestinationFolder
 {
     param ([string]$TargetPath)
-    if (-Not(Test-Path -Path $targetPath -PathType Container))
+    if (-Not(Test-Path -Path $TargetPath -PathType Container))
     {
         New-Item -ItemType Directory -Path $TargetPath -Force
         Write-Host "Destination folder created: $TargetPath"
@@ -53,166 +66,81 @@ function New-DestinationFolder
     }
 }
 
-function Invoke-SigSciAgentDownload
+function Invoke-Download
 {
-    param ([string]$AgentVersion, [string]$DownloadFolder)
-    $Url = "https://dl.signalsciences.net/sigsci-agent/$AgentVersion/windows/sigsci-agent_$AgentVersion.msi"
-    $DownloadPath = "$DownloadFolder\sigsci-agent_$AgentVersion.msi"
-    New-DestinationFolder -TargetPath $DownloadFolder
+    param ([string]$SourceUrl, [string]$TargetPath)
+    New-DestinationFolder -TargetPath (Split-Path -Parent $TargetPath)
     try
     {
-        Invoke-WebRequest -Uri $Url -OutFile $DownloadPath
-        Write-Host "Agent download completed."
+        Invoke-WebRequest -Uri $SourceUrl -OutFile $TargetPath
+        Write-Host "Download completed: $TargetPath"
     }
     catch
     {
-        Write-Host "Error occurred whild downloading the agent file:"
+        Write-Host "Error occurred whild downloading the file from $SourceUrl :"
         Write-Host $_.Exception.Message
     }
 }
 
-function Install-SigSciAgent
+function Install-Msi
 {
     param ([string]$MsiPath)
     try
     {
         Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$MsiPath`" /quiet /norestart" -Wait
-        Write-Host "Agent installation completed."
+        Write-Host "Installation completed: $MsiPath"
     }
     catch
     {
-        Write-Host "Error occurred while installing the agent:"
+        Write-Host "Error occurred while installing $MsiPath :"
         Write-Host $_.Exception.Message
     }
 }
 
-function Start-SigSciAgentService
+function Test-ServiceStatus
 {
+    param ([string]$ServiceName)
     try
     {
-        Start-Service -Name "sigsci-agent"
-        Write-Host "sigsci-agent service started."
-    }
-    catch
-    {
-        Write-Host "Error occurred while starting the sigsci-agent services:"
-        Write-Host $_.Exception.Message
-    }
-
-    $serviceStatus = Get-Service -Name "sigsci-agent"
-    if ($serviceStatus.Status -eq "Running")
-    {
-        Write-Host "sigsci-agent service is running."
-    }
-    else
-    {
-        Write-Host "sigsci-agent service is not running or could not be started."
-    }
-}
-
-function Test-IISStatus
-{
-    $serviceName = "W3SVC"
-    try
-    {
-        $serviceStatus = Get-Service -Name $serviceName
+        $serviceStatus = Get-Service -Name $ServiceName
         if ($serviceStatus.Status -eq "Running")
         {
-            Write-Host "IIS (W3SVC) is running."
+            Write-Host "Service is running: $ServiceName"
             return $true
         }
         else
         {
-            Write-Host "IIS (W3SVC) is not running."
+            Write-Host "Service is not running: $ServiceName"
             return $false
         }
         return
     }
     catch
     {
-        Write-Host "Error occurred while checking the status of IIS (W3SVC). It may not be installed or running:"
+        Write-Host "Error occurred while checking the status of $ServiceName :"
         Write-Host $_.Exception.Message
         return $false
     }
 }
 
-function Get-IISModuleVersion
+function Start-SpecificService
 {
-    param ([string]$iisModulePath)
+    param ([string]$ServiceName)
     try
     {
-        $output = & $iisModulePath Version 2>&1
-        $versionPattern = 'v(\d+(\.\d+){2,3})'
-        $version = $output | Select-String -Pattern $versionPattern | ForEach-Object { $_.Matches.Groups[1].Value }
-        return $version
+        Start-Service -Name $ServiceName
+        Write-Host "Started service: $ServiceName"
     }
     catch
     {
-        Write-Host "Error occurred while getting the iis module version."
-        return $null
-    }
-}
-
-function Get-IISModuleLatestVersion
-{
-    param ([string]$Url = "https://dl.signalsciences.net/sigsci-module-iis/VERSION")
-    try
-    {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $response = Invoke-WebRequest -Uri $Url
-        if ($response.StatusCode -eq 200)
-        {
-            return $response.Content.Trim()
-        }
-        else
-        {
-            Write-Host "Error: The server returned a non-successful status code: $( $response.StatusCode )"
-            return $null
-        }
-    }
-    catch
-    {
-        Write-Host "Error occurred while retrieving the iis module latest version:"
-        Write-Host $_.Exception.Message
-        return $null
-    }
-}
-
-function Invoke-IISModuleDownload
-{
-    param ([string]$moduleVersion, [string]$downloadFolder)
-    $Url = "https://dl.signalsciences.net/sigsci-module-iis/$moduleVersion/sigsci-module-iis-x64-$moduleVersion.msi"
-    $DownloadPath = "$downloadFolder\sigsci-module-iis-x64-$moduleVersion.msi"
-    New-DestinationFolder -TargetPath $downloadFolder
-    try
-    {
-        Invoke-WebRequest -Uri $Url -OutFile $DownloadPath
-        Write-Host "iis module download completed."
-    }
-    catch
-    {
-        Write-Host "Error occurred whild downloading the iis module file:"
+        Write-Host "Error occurred while starting service $ServiceName :"
         Write-Host $_.Exception.Message
     }
+
+    Test-ServiceStatus -ServiceName $ServiceName
 }
 
-function Install-IISModule
-{
-    param ([string]$MsiPath)
-    try
-    {
-        Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$MsiPath`" /quiet /norestart" -Wait
-        Write-Host "iis module installation completed."
-    }
-    catch
-    {
-        Write-Host "Error occurred while installing the iis module:"
-        Write-Host $_.Exception.Message
-    }
-}
-
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
+$isAdmin = Test-IsAdministrator
 if (-Not$isAdmin)
 {
     Write-Host "Please run this script as an administrator."
@@ -220,29 +148,33 @@ if (-Not$isAdmin)
 }
 
 $agentPath = "C:\Program Files\Signal Sciences\Agent\sigsci-agent.exe"
-$agentVersion = Get-SigSciAgentVersion
-$agentLatestVersion = Get-SigSciAgentLatestVersion
+$agentVersion = Get-Version -FilePath $agentPath -VersionFlag "--version"
+$agentLatestVersion = Get-LatestVersion -URl "https://dl.signalsciences.net/sigsci-agent/VERSION"
 $downloadFolder = "C:\temp\signal-sciences"
 
 if ((-Not(Test-Path -Path $agentPath -PathType Leaf)) -or (-Not$agentVersion) -or ([Version]$agentVersion -lt [Version]$agentLatestVersion))
 {
-    Invoke-SigSciAgentDownload -AgentVersion $agentLatestVersion -DownloadFolder $downloadFolder
-    Install-SigSciAgent -MsiPath "$downloadFolder\sigsci-agent_$agentLatestVersion.msi"
-    Start-SigSciAgentService
+    $agentDownloadUrl = "https://dl.signalsciences.net/sigsci-agent/$agentLatestVersion/windows/sigsci-agent_$agentLatestVersion.msi"
+    $agentDownloadPath = Join-Path $downloadFolder "sigsci-agent_$agentLatestVersion.msi"
+    Invoke-Download -SourceUrl $agentDownloadUrl -TargetPath $agentDownloadPath
+    Install-Msi -MsiPath $agentDownloadPath
+    Start-SpecificService -ServiceName "sigsci-agent"
 }
 
-if (-Not(Test-IISStatus))
+if (-Not(Test-ServiceStatus -ServiceName "W3SVC"))
 {
     Write-Host "IIS (W3SVC) may not be installed or running."
     Exit 1
 }
 
-$modulePath = "C:\Program Files\Signal Sciences\IIS Module\SigsciCtl.exe"
-$moduleVersion = Get-IISModuleVersion -iisModulePath $modulePath
-$moduleLatestVersion = Get-IISModuleLatestVersion
+$iisModulePath = "C:\Program Files\Signal Sciences\IIS Module\SigsciCtl.exe"
+$iisModuleVersion = Get-Version -FilePath $iisModulePath -VersionFlag "Version"
+$iisModuleLatestVersion = Get-LatestVersion -Url "https://dl.signalsciences.net/sigsci-module-iis/VERSION"
 
-if ((-Not(Test-Path -Path $modulePath -PathType Leaf)) -or (-Not$moduleVersion) -or ([Version]$moduleVersion -lt [Version]$moduleLatestVersion))
+if ((-Not(Test-Path -Path $iisModulePath -PathType Leaf)) -or (-Not$iisModuleVersion) -or ([Version]$iisModuleVersion -lt [Version]$iisModuleLatestVersion))
 {
-    Invoke-IISModuleDownload -moduleVersion $moduleLatestVersion -DownloadFolder $downloadFolder
-    Install-IISModule -MsiPath "$downloadFolder\sigsci-module-iis-x64-$moduleLatestVersion.msi"
+    $iisModuleDownloadUrl = "https://dl.signalsciences.net/sigsci-module-iis/$iisModuleLatestVersion/sigsci-module-iis-x64-$iisModuleLatestVersion.msi"
+    $iisMOduleDownloadPath = Join-Path $downloadFolder "sigsci-module-iis-x64-$iisModuleLatestVersion.msi"
+    Invoke-Download -SourceUrl $iisModuleDownloadUrl -TargetPath $iisMOduleDownloadPath
+    Install-Msi -MsiPath $iisMOduleDownloadPath
 }
