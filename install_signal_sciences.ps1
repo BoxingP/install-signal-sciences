@@ -125,19 +125,43 @@ function Test-ServiceStatus
 
 function Start-SpecificService
 {
-    param ([string]$ServiceName)
+    param ([string]$ServiceName, [int]$TimeoutSeconds = 60)
     try
     {
-        Start-Service -Name $ServiceName
-        Write-Host "Started service: $ServiceName"
+        $serviceStatus = Get-Service -Name $ServiceName
+
+        if ($serviceStatus.Status -eq "Running")
+        {
+            Restart-Service -Name $ServiceName
+            Write-Host "Restarted service: $ServiceName"
+        }
+        else
+        {
+            Start-Service -Name $ServiceName
+            Write-Host "Started service: $ServiceName"
+        }
+
+        $timeoutCounter = 0
+        while ($serviceStatus.Status -ne "Running" -and $timeoutCounter -lt $TimeoutSeconds)
+        {
+            $serviceStatus = Get-Service -Name $ServiceName
+            Start-Sleep -Seconds 1
+            $timeoutCounter++
+        }
+        if ($serviceStatus.Status -eq "Running")
+        {
+            Write-Host "Service is now running: $ServiceName"
+        }
+        else
+        {
+            Write-Host "Timeout reached. Service did not start within $TimeoutSeconds seconds. Status is: $( $serviceStatus.Status )"
+        }
     }
     catch
     {
         Write-Host "Error occurred while starting service $ServiceName :"
         Write-Host $_.Exception.Message
     }
-
-    Test-ServiceStatus -ServiceName $ServiceName
 }
 
 $isAdmin = Test-IsAdministrator
@@ -158,6 +182,11 @@ if ((-Not(Test-Path -Path $agentPath -PathType Leaf)) -or (-Not$agentVersion) -o
     $agentDownloadPath = Join-Path $downloadFolder "sigsci-agent_$agentLatestVersion.msi"
     Invoke-Download -SourceUrl $agentDownloadUrl -TargetPath $agentDownloadPath
     Install-Msi -MsiPath $agentDownloadPath
+    Start-SpecificService -ServiceName "sigsci-agent"
+}
+
+if (-Not(Test-ServiceStatus -ServiceName "sigsci-agent"))
+{
     Start-SpecificService -ServiceName "sigsci-agent"
 }
 
